@@ -7,6 +7,7 @@ import { Logo } from '../components/Logo.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
 
 const POLL_INTERVAL_MS = 2000;
+const QR_ERROR_MESSAGE = 'Не удалось создать QR код. Попробуйте снова';
 
 function getTimeLeft(expiresAt) {
   if (!expiresAt) return 0;
@@ -27,7 +28,7 @@ export function LoginPage() {
   const { t } = useI18n();
   const [qr, setQr] = useState(null);
   const [qrImage, setQrImage] = useState('');
-  const [status, setStatus] = useState('idle');
+  const [status, setStatus] = useState('generating');
   const [timeLeft, setTimeLeft] = useState(0);
   const [error, setError] = useState('');
   const abortRef = useRef(null);
@@ -47,13 +48,18 @@ export function LoginPage() {
     }
   }, []);
 
+  const failQrFlow = useCallback(() => {
+    setQr(null);
+    setQrImage('');
+    setTimeLeft(0);
+    setStatus('failed');
+    setError(QR_ERROR_MESSAGE);
+  }, []);
+
   const startQrLogin = useCallback(async () => {
     stopFlow();
     setStatus('generating');
     setError('');
-    setQr(null);
-    setQrImage('');
-    setTimeLeft(0);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -74,10 +80,13 @@ export function LoginPage() {
       setTimeLeft(getTimeLeft(data.expires_at));
     } catch (event) {
       if (event.name === 'AbortError') return;
-      setStatus('failed');
-      setError(event.message || t('qrCreateError'));
+      failQrFlow(event.message || t('qrCreateError'));
     }
-  }, [stopFlow, t]);
+  }, [failQrFlow, stopFlow, t]);
+
+  useEffect(() => {
+    startQrLogin();
+  }, [startQrLogin]);
 
   useEffect(() => {
     if (!qr?.token || status !== 'waiting') return undefined;
@@ -107,12 +116,10 @@ export function LoginPage() {
           startQrLogin();
           return;
         }
-        setStatus('failed');
-        setError(data?.error || t('qrAuthError'));
+        failQrFlow(data?.error || t('qrAuthError'));
       } catch (event) {
         if (event.name === 'AbortError') return;
-        setStatus('failed');
-        setError(event.message || t('qrStatusError'));
+        failQrFlow(event.message || t('qrStatusError'));
       }
     };
 
@@ -120,7 +127,7 @@ export function LoginPage() {
     return () => {
       if (pollRef.current) window.clearTimeout(pollRef.current);
     };
-  }, [auth, qr, startQrLogin, status, t]);
+  }, [auth, failQrFlow, qr, startQrLogin, status, t]);
 
   useEffect(() => {
     if (!qr?.expires_at || status !== 'waiting') return undefined;
@@ -148,6 +155,7 @@ export function LoginPage() {
 
   const hasQr = Boolean(qrImage && qr?.token);
   const busy = status === 'generating' || status === 'authorized';
+  const showLoadingQr = !hasQr && status === 'generating';
 
   return (
     <div className="screen active">
@@ -174,6 +182,10 @@ export function LoginPage() {
                   <strong>{timeLeft} {t('secondsShort')}</strong>
                 </div>
               </div>
+            ) : showLoadingQr ? (
+              <div className="qr-placeholder qr-placeholder-loading" aria-live="polite">
+                <div className="spinner-ring" />
+              </div>
             ) : (
               <div className="qr-placeholder">
                 <Smartphone size={42} />
@@ -182,14 +194,8 @@ export function LoginPage() {
 
             <button className="btn btn-primary btn-full" type="button" disabled={busy} onClick={startQrLogin}>
               <RefreshCw size={18} />
-              <span>{hasQr ? t('issueNewQr') : t('login')}</span>
+              <span>{t('issueNewQr')}</span>
             </button>
-
-            {hasQr ? (
-              <button className="btn btn-ghost btn-full" type="button" disabled={busy} onClick={startQrLogin}>
-                {t('restart')}
-              </button>
-            ) : null}
           </div>
 
           {error ? <div className="login-error">{error}</div> : null}
