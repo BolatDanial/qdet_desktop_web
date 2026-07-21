@@ -1,13 +1,15 @@
-import { Check, CreditCard, RefreshCw, Send, Sparkles } from 'lucide-react';
+import { Check, Clock, Coins, CreditCard, RefreshCw, Send, Sparkles, XCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { api, ApiError } from '../api/client.js';
 import { useAuth } from '../auth/AuthContext.jsx';
+import { useModal } from '../components/ModalProvider.jsx';
 import { useToast } from '../components/ToastProvider.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
-import { fmt, fmtDate } from '../utils/format.js';
+import { fmt, fmtDate, fmtDateTime } from '../utils/format.js';
 
 const MONTH_PRESETS = [1, 3, 6, 12];
+const BONUS_MAX_SHARE = 0.5;
 
 function queryParam(search, key) {
   return new URLSearchParams(search).get(key)?.trim() || '';
@@ -120,15 +122,114 @@ function paymentFor(tariff, months) {
   };
 }
 
+function maxBonusesForAmount(amount) {
+  return Math.floor(Math.max(0, Number(amount) || 0) * BONUS_MAX_SHARE);
+}
+
+function appliedBonuses(amount, balance, useBonuses) {
+  if (!useBonuses) return 0;
+  const total = Math.max(0, Number(amount) || 0);
+  const available = Math.max(0, Number(balance) || 0);
+  if (!total || !available) return 0;
+  return Math.min(available, maxBonusesForAmount(total));
+}
+
 function errorMessage(error, fallback) {
   if (error instanceof ApiError) return error.message;
   if (error instanceof TypeError) return fallback;
   return error?.message || fallback;
 }
 
+function invoiceCancelErrorMessage(error, t) {
+  if (!(error instanceof ApiError)) return errorMessage(error, t('tariffInvoiceCancelError'));
+  if (error.status === 403) return t('tariffInvoiceShopMismatch');
+  if (error.status === 404) return t('tariffInvoiceNotFound');
+  if (error.status === 409) return t('tariffInvoiceNotPending');
+  return error.message || t('tariffInvoiceCancelError');
+}
+
+function PendingInvoiceCard({ invoice, isCancelling, onCancel, t }) {
+  if (!invoice) return null;
+
+  return (
+    <div className="card tariff-pending-invoice mb-6">
+      <div className="tariff-pending-invoice-header">
+        <div className="tariff-pending-invoice-title">
+          <span className="tariff-pending-icon">
+            <Clock size={18} />
+          </span>
+          <div>
+            <div className="card-title">{t('tariffPendingInvoiceTitle')}</div>
+            <p className="tariff-pending-subtitle">{t('tariffPendingInvoiceSubtitle')}</p>
+          </div>
+        </div>
+        <span className="badge badge-warning">{t('tariffInvoiceStatusPending')}</span>
+      </div>
+
+      <div className="tariff-pending-details">
+        <div className="tariff-pending-row">
+          <div>
+            <span>{t('navTariff')}</span>
+            <strong>{invoice.tariff_name}</strong>
+          </div>
+          <div>
+            <span>{t('tariffMonthShort')}</span>
+            <strong>{t('monthsShort', { count: invoice.months })}</strong>
+          </div>
+        </div>
+        <div className="tariff-pending-row">
+          <div>
+            <span>{t('shop')}</span>
+            <strong>{invoice.shop_name || t('selectedShopFallback')}</strong>
+          </div>
+          <div>
+            <span>{t('amount')}</span>
+            <strong className="tariff-pending-detail-amount">{fmt(invoice.amount)}</strong>
+          </div>
+        </div>
+        <div className="tariff-pending-row tariff-pending-row-full">
+          <div>
+            <span>{t('phone')}</span>
+            <strong>{invoice.phone || '—'}</strong>
+          </div>
+        </div>
+        {invoice.comment ? (
+          <div className="tariff-pending-row tariff-pending-row-full">
+            <div>
+              <span>{t('comment')}</span>
+              <strong>{invoice.comment}</strong>
+            </div>
+          </div>
+        ) : null}
+        {Number(invoice.bonuses) > 0 ? (
+          <div className="tariff-pending-row tariff-pending-row-full">
+            <div>
+              <span>{t('tariffInvoiceBonuses')}</span>
+              <strong className="color-green">{fmt(invoice.bonuses)}</strong>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <p className="tariff-pending-created">{t('tariffInvoiceCreatedAt', { date: fmtDateTime(invoice.created_at) })}</p>
+
+      <button
+        className="btn btn-ghost btn-full tariff-pending-cancel"
+        type="button"
+        disabled={isCancelling}
+        onClick={onCancel}
+      >
+        <XCircle size={16} />
+        {isCancelling ? t('tariffInvoiceCancelling') : t('tariffInvoiceCancel')}
+      </button>
+    </div>
+  );
+}
+
 export function TariffPage() {
   const auth = useAuth();
   const toast = useToast();
+  const modal = useModal();
   const location = useLocation();
   const { t } = useI18n();
   const authShops = useMemo(() => auth.shops || [], [auth.shops]);
@@ -159,6 +260,12 @@ export function TariffPage() {
   const [comment, setComment] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  const [pendingInvoice, setPendingInvoice] = useState(null);
+  const [invoiceStatus, setInvoiceStatus] = useState('idle');
+  const [isCancellingInvoice, setIsCancellingInvoice] = useState(false);
+  const [bonusBalance, setBonusBalance] = useState(0);
+  const [bonusStatus, setBonusStatus] = useState('idle');
+  const [useBonuses, setUseBonuses] = useState(false);
 
   const selectedShop = useMemo(
     () => shops.find((shop) => String(shop.shop_id) === String(selectedShopId)) || null,
@@ -171,6 +278,15 @@ export function TariffPage() {
     return currentTariff && String(currentTariff.tariff_id) === String(selectedTariffId) ? currentTariff : null;
   }, [currentTariff, selectedTariffId, tariffs]);
   const payment = useMemo(() => paymentFor(selectedTariff, months), [months, selectedTariff]);
+  const bonusesToApply = useMemo(
+    () => appliedBonuses(payment.total, bonusBalance, useBonuses),
+    [bonusBalance, payment.total, useBonuses],
+  );
+  const payableTotal = useMemo(
+    () => Math.max(0, payment.total - bonusesToApply),
+    [bonusesToApply, payment.total],
+  );
+  const canUseBonuses = bonusBalance > 0 && payment.total > 0 && maxBonusesForAmount(payment.total) > 0;
   const formattedPhone = useMemo(() => formatPhoneDigits(phoneDigits), [phoneDigits]);
   const canSubmit = Boolean(selectedShopId && selectedTariff && phoneIsComplete(phoneDigits) && payment.total > 0);
   const showTariffSelection = !isTokenMode && !currentTariff;
@@ -257,6 +373,65 @@ export function TariffPage() {
   }, [accessOptions, hasAccess, reloadTick, requestedShopId, selectedShopId, t, urlToken]);
 
   useEffect(() => {
+    if (!hasAccess || !selectedShopId) return undefined;
+
+    let active = true;
+    setInvoiceStatus('loading');
+    setPendingInvoice(null);
+
+    api.tariff
+      .getPendingInvoice(selectedShopId, accessOptions)
+      .then((data) => {
+        if (!active) return;
+        setPendingInvoice(data?.invoice || null);
+        setInvoiceStatus('ready');
+      })
+      .catch((error) => {
+        if (!active) return;
+        setInvoiceStatus('error');
+        setPendingInvoice(null);
+        if (!isTokenMode) {
+          toast.error(errorMessage(error, t('tariffInvoiceLoadError')));
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [accessOptions, hasAccess, isTokenMode, reloadTick, selectedShopId, t, toast]);
+
+  useEffect(() => {
+    if (!hasAccess || !selectedShopId) return undefined;
+
+    let active = true;
+    setBonusStatus('loading');
+    setBonusBalance(0);
+    setUseBonuses(false);
+
+    api.tariff
+      .getBonusBalance(selectedShopId, accessOptions)
+      .then((data) => {
+        if (!active) return;
+        setBonusBalance(Math.max(0, Number(data?.balance) || 0));
+        setBonusStatus('ready');
+      })
+      .catch(() => {
+        if (!active) return;
+        setBonusBalance(0);
+        setBonusStatus('error');
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [accessOptions, hasAccess, reloadTick, selectedShopId]);
+
+  useEffect(() => {
+    if (!useBonuses || canUseBonuses) return;
+    setUseBonuses(false);
+  }, [canUseBonuses, useBonuses]);
+
+  useEffect(() => {
     if (selectedShop?.phone) {
       setPhoneDigits(normalizePhoneDigits(selectedShop.phone));
       return;
@@ -324,6 +499,66 @@ export function TariffPage() {
     setPhoneDigits(nextDigits);
   };
 
+  const refreshPendingInvoice = async () => {
+    if (!selectedShopId) return;
+    try {
+      const data = await api.tariff.getPendingInvoice(selectedShopId, accessOptions);
+      setPendingInvoice(data?.invoice || null);
+      setInvoiceStatus('ready');
+    } catch {
+      setPendingInvoice(null);
+      setInvoiceStatus('error');
+    }
+  };
+
+  const confirmCancelInvoice = () => {
+    if (!pendingInvoice) return;
+
+    modal.open({
+      title: t('tariffInvoiceCancelConfirmTitle'),
+      body: <p className="color-muted">{t('tariffInvoiceCancelConfirmText')}</p>,
+      footer: (
+        <>
+          <button className="btn btn-ghost" type="button" onClick={modal.closeAll}>
+            {t('cancel')}
+          </button>
+          <button className="btn btn-danger" type="button" onClick={() => { modal.closeAll(); cancelInvoice(); }}>
+            {t('tariffInvoiceCancel')}
+          </button>
+        </>
+      ),
+    });
+  };
+
+  const cancelInvoice = async () => {
+    if (!pendingInvoice || !selectedShopId) return;
+
+    setIsCancellingInvoice(true);
+    try {
+      const result = await api.tariff.cancelInvoice(
+        {
+          shop_id: String(selectedShopId),
+          invoice_id: Number(pendingInvoice.id),
+        },
+        accessOptions,
+      );
+      if (result?.status === 'error') {
+        throw new Error(result.error_text || t('tariffInvoiceCancelError'));
+      }
+      toast.success(t('tariffInvoiceCancelSuccess'));
+      await refreshPendingInvoice();
+    } catch (error) {
+      toast.error(
+        t('tariffInvoiceCancelErrorWithMessage', {
+          message: invoiceCancelErrorMessage(error, t),
+        }),
+      );
+      await refreshPendingInvoice();
+    } finally {
+      setIsCancellingInvoice(false);
+    }
+  };
+
   const submit = async (event) => {
     event.preventDefault();
     if (!selectedShopId) {
@@ -341,10 +576,12 @@ export function TariffPage() {
 
     setIsSubmitting(true);
     try {
+      const bonuses = appliedBonuses(payment.total, bonusBalance, useBonuses);
       const result = await api.tariff.remotePayRequest(
         {
           phone: formatPhoneDigits(phoneDigits),
           amount: payment.total,
+          bonuses,
           comment: comment.trim() || undefined,
           shop_id: String(selectedShopId),
           tariff_id: Number(selectedTariff.tariff_id),
@@ -355,6 +592,15 @@ export function TariffPage() {
       if (result?.status === 'error') throw new Error(result.error_text || t('remotePaySendError'));
       toast.success(t('remotePaySent'));
       setComment('');
+      setUseBonuses(false);
+      await refreshPendingInvoice();
+      try {
+        const bonusData = await api.tariff.getBonusBalance(selectedShopId, accessOptions);
+        setBonusBalance(Math.max(0, Number(bonusData?.balance) || 0));
+        setBonusStatus('ready');
+      } catch {
+        setBonusStatus('error');
+      }
     } catch (error) {
       toast.error(t('remotePaySendErrorWithMessage', { message: errorMessage(error, t('remotePaySendError')) }));
     } finally {
@@ -415,6 +661,22 @@ export function TariffPage() {
               </div>
             )}
           </div>
+
+          {invoiceStatus === 'loading' ? (
+            <div className="card tariff-invoice-loading mb-6">
+              <div className="spinner-ring" />
+              <span>{t('loading')}</span>
+            </div>
+          ) : null}
+
+          {invoiceStatus === 'ready' && pendingInvoice ? (
+            <PendingInvoiceCard
+              invoice={pendingInvoice}
+              isCancelling={isCancellingInvoice}
+              onCancel={confirmCancelInvoice}
+              t={t}
+            />
+          ) : null}
 
           {tariffError ? (
             <div className="card warning-card mb-6">
@@ -504,6 +766,22 @@ export function TariffPage() {
             </div>
           </div>
           <p className="tariff-payment-hint">{t('tariffPaymentHint')}</p>
+
+          {isTokenMode && invoiceStatus === 'loading' ? (
+            <div className="tariff-inline-loading">
+              <div className="spinner-ring" />
+              <span>{t('loading')}</span>
+            </div>
+          ) : null}
+
+          {isTokenMode && invoiceStatus === 'ready' && pendingInvoice ? (
+            <PendingInvoiceCard
+              invoice={pendingInvoice}
+              isCancelling={isCancellingInvoice}
+              onCancel={confirmCancelInvoice}
+              t={t}
+            />
+          ) : null}
 
           <form className="tariff-pay-form" onSubmit={submit}>
             <div className="tariff-payment-summary">
@@ -601,6 +879,50 @@ export function TariffPage() {
               </div>
               {payment.promo ? (
                 <p>{t('tariffPromoApplied', { percent: payment.promo.discount_percent })}</p>
+              ) : null}
+            </div>
+
+            <div className="tariff-bonus-section">
+              <div className="tariff-bonus-balance">
+                <span className="tariff-bonus-balance-label">
+                  <Coins size={15} />
+                  {t('tariffBonusBalance')}
+                </span>
+                <strong>{bonusStatus === 'loading' ? '…' : fmt(bonusBalance)}</strong>
+              </div>
+
+              <label className={`tariff-bonus-toggle ${!canUseBonuses ? 'disabled' : ''}`}>
+                <span>{t('tariffUseBonuses')}</span>
+                <input
+                  type="checkbox"
+                  checked={useBonuses && canUseBonuses}
+                  disabled={!canUseBonuses || bonusStatus === 'loading'}
+                  onChange={(event) => setUseBonuses(event.target.checked)}
+                />
+                <span className="tariff-bonus-switch" aria-hidden="true" />
+              </label>
+
+              {canUseBonuses ? (
+                <p className="tariff-bonus-hint">{t('tariffBonusMaxHint', { percent: 50 })}</p>
+              ) : bonusStatus === 'ready' ? (
+                <p className="tariff-bonus-hint">{t('tariffBonusUnavailable')}</p>
+              ) : null}
+
+              {useBonuses && bonusesToApply > 0 ? (
+                <div className="tariff-bonus-breakdown">
+                  <div>
+                    <span>{t('amount')}</span>
+                    <strong>{fmt(payment.total)}</strong>
+                  </div>
+                  <div>
+                    <span>{t('tariffBonusesApplied')}</span>
+                    <strong className="color-green">-{fmt(bonusesToApply)}</strong>
+                  </div>
+                  <div className="tariff-bonus-payable">
+                    <span>{t('tariffTotalWithBonuses')}</span>
+                    <strong>{fmt(payableTotal)}</strong>
+                  </div>
+                </div>
               ) : null}
             </div>
 

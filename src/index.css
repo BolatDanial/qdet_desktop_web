@@ -926,11 +926,216 @@ tr:hover td { background: var(--bg-hover); }
   font-size: 13px;
   font-weight: 700;
 }
+.tariff-bonus-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  margin-bottom: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent-2) 22%, var(--border));
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent-2) 8%, transparent),
+    var(--bg-hover)
+  );
+}
+.tariff-bonus-balance {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.tariff-bonus-balance-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.tariff-bonus-balance strong {
+  font-size: 16px;
+  color: var(--accent-2);
+}
+.tariff-bonus-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.tariff-bonus-toggle.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.tariff-bonus-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.tariff-bonus-switch {
+  position: relative;
+  width: 44px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--border);
+  transition: var(--transition);
+}
+.tariff-bonus-switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  transition: var(--transition);
+}
+.tariff-bonus-toggle input:checked + .tariff-bonus-switch {
+  background: var(--accent-2);
+}
+.tariff-bonus-toggle input:checked + .tariff-bonus-switch::after {
+  transform: translateX(18px);
+}
+.tariff-bonus-toggle input:focus-visible + .tariff-bonus-switch {
+  outline: 2px solid color-mix(in srgb, var(--accent-2) 40%, transparent);
+  outline-offset: 2px;
+}
+.tariff-bonus-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.tariff-bonus-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.tariff-bonus-breakdown > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.tariff-bonus-breakdown span {
+  color: var(--text-secondary);
+}
+.tariff-bonus-payable {
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.tariff-bonus-payable strong {
+  font-size: 20px;
+  color: var(--accent);
+}
 .tariff-loading {
   display: flex;
   align-items: center;
   gap: 14px;
   color: var(--text-secondary);
+}
+.tariff-invoice-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.tariff-pending-invoice {
+  border-color: color-mix(in srgb, var(--accent-orange) 28%, var(--border));
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent-orange) 10%, transparent),
+    var(--bg-card)
+  );
+}
+.tariff-pending-invoice-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.tariff-pending-invoice-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+.tariff-pending-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  color: var(--accent-orange);
+  background: color-mix(in srgb, var(--accent-orange) 14%, transparent);
+}
+.tariff-pending-subtitle {
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.tariff-pending-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-card) 88%, transparent);
+}
+.tariff-pending-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+.tariff-pending-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12px;
+}
+.tariff-pending-row span {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.tariff-pending-row strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 700;
+}
+.tariff-pending-detail-amount {
+  color: var(--accent-orange);
+}
+.tariff-pending-created {
+  margin-bottom: 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.tariff-pending-cancel {
+  border-color: color-mix(in srgb, var(--accent-red) 30%, var(--border));
+  color: var(--accent-red);
+}
+.tariff-pending-cancel:hover:not(:disabled) {
+  border-color: var(--accent-red);
+  background: color-mix(in srgb, var(--accent-red) 8%, var(--bg-secondary));
+  color: var(--accent-red);
 }
 
 /* Charts placeholder */
@@ -1059,6 +1264,9 @@ tr:hover td { background: var(--bg-hover); }
   }
   .current-tariff-card {
     align-items: flex-start;
+    flex-direction: column;
+  }
+  .tariff-pending-invoice-header {
     flex-direction: column;
   }
   .btn {

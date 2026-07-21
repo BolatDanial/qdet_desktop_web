@@ -217,6 +217,12 @@ export const api = {
     getShopPhones: (opts) => api.get('/api/web/tariff/shop-phones', undefined, { ...opts, shopScoped: false }),
     getAvailable: (shopId, opts) =>
       api.get('/api/web/tariff/available', { shop_id: shopId }, { ...opts, shopScoped: false }),
+    getPendingInvoice: (shopId, opts) =>
+      api.get('/api/web/tariff/invoice/pending', { shop_id: shopId }, { ...opts, shopScoped: false }),
+    getBonusBalance: (shopId, opts) =>
+      api.get('/api/web/tariff/bonus-balance', { shop_id: shopId }, { ...opts, shopScoped: false }),
+    cancelInvoice: (data, opts) =>
+      api.post('/api/web/tariff/invoice/cancel', data, { ...opts, shopScoped: false }),
     remotePayRequest: (data, opts) =>
       api.post('/api/web/tariff/remote_pay_request', data, { ...opts, shopScoped: false }),
   },
