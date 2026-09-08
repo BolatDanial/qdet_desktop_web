@@ -1,4 +1,4 @@
-import { Check, Clock, Coins, CreditCard, RefreshCw, Send, Sparkles, XCircle } from 'lucide-react';
+import { Check, ChevronDown, Clock, Coins, CreditCard, RefreshCw, Send, Sparkles, XCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { api, ApiError } from '../api/client.js';
@@ -7,9 +7,59 @@ import { useModal } from '../components/ModalProvider.jsx';
 import { useToast } from '../components/ToastProvider.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
 import { fmt, fmtDate, fmtDateTime } from '../utils/format.js';
+import {
+  finishRemotePayRecord,
+  prepareRemotePayIdempotency,
+  saveRemotePayRecord,
+  syncRemotePayIdempotency,
+} from '../utils/remotePayIdempotency.js';
 
 const MONTH_PRESETS = [1, 3, 6, 12];
 const BONUS_MAX_SHARE = 0.5;
+
+function currentFeaturePriceMap(currentTariff) {
+  const features = Array.isArray(currentTariff?.features) ? currentTariff.features : [];
+  const prices = new Map();
+  features.forEach((feature) => {
+    const id = Number(feature?.feature_id);
+    if (!Number.isFinite(id)) return;
+    prices.set(id, Number(feature.price) || 0);
+  });
+  return prices;
+}
+
+function paidFeaturesFrom(features, currentTariff) {
+  const currentPrices = currentFeaturePriceMap(currentTariff);
+  return (Array.isArray(features) ? features : [])
+    .filter((feature) => Number(feature?.price) > 0)
+    .map((feature) => {
+      const featureId = Number(feature.feature_id);
+      const owned = currentPrices.has(featureId);
+      return {
+        feature_id: featureId,
+        feature_name: feature.feature_name || '',
+        price: owned ? currentPrices.get(featureId) : Number(feature.price) || 0,
+        owned,
+      };
+    });
+}
+
+function selectedFeaturesPayload(paidFeatures, selectedFeatureIds) {
+  return paidFeatures
+    .filter((feature) => selectedFeatureIds.has(feature.feature_id))
+    .map((feature) => ({
+      feature_id: feature.feature_id,
+      price: feature.price,
+    }));
+}
+
+function featuresCostFor(paidFeatures, selectedFeatureIds, months) {
+  const monthCount = Math.max(1, Number(months) || 1);
+  const monthly = paidFeatures
+    .filter((feature) => selectedFeatureIds.has(feature.feature_id))
+    .reduce((sum, feature) => sum + Number(feature.price || 0), 0);
+  return monthly * monthCount;
+}
 
 function queryParam(search, key) {
   return new URLSearchParams(search).get(key)?.trim() || '';
@@ -140,12 +190,36 @@ function errorMessage(error, fallback) {
   return error?.message || fallback;
 }
 
+function errorDetailText(error) {
+  const detail = error?.data?.detail ?? error?.message ?? '';
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => item?.msg || item?.detail || String(item)).join(' ');
+  }
+  if (detail && typeof detail === 'object') {
+    return detail.msg || detail.message || detail.detail || JSON.stringify(detail);
+  }
+  return String(detail);
+}
+
+function isPendingInvoiceConflict(error) {
+  if (!(error instanceof ApiError) || error.status !== 400) return false;
+  return /already has pending invoice/i.test(errorDetailText(error));
+}
+
 function invoiceCancelErrorMessage(error, t) {
   if (!(error instanceof ApiError)) return errorMessage(error, t('tariffInvoiceCancelError'));
   if (error.status === 403) return t('tariffInvoiceShopMismatch');
   if (error.status === 404) return t('tariffInvoiceNotFound');
   if (error.status === 409) return t('tariffInvoiceNotPending');
+  if (error.status === 422) return t('tariffInvoiceCancelError');
   return error.message || t('tariffInvoiceCancelError');
+}
+
+function pendingInvoiceId(invoice) {
+  const raw = invoice?.invoice_id ?? invoice?.id ?? invoice?.invoiceId;
+  const id = Number(raw);
+  return Number.isInteger(id) && id > 0 ? id : null;
 }
 
 function PendingInvoiceCard({ invoice, isCancelling, onCancel, t }) {
@@ -254,6 +328,9 @@ export function TariffPage() {
   const [tariffError, setTariffError] = useState('');
   const [tariffs, setTariffs] = useState([]);
   const [currentTariff, setCurrentTariff] = useState(null);
+  const [paidFeatures, setPaidFeatures] = useState([]);
+  const [selectedFeatureIds, setSelectedFeatureIds] = useState(() => new Set());
+  const [featuresOpen, setFeaturesOpen] = useState(false);
   const [selectedTariffId, setSelectedTariffId] = useState('');
   const [phoneDigits, setPhoneDigits] = useState('7');
   const [months, setMonths] = useState(1);
@@ -278,17 +355,29 @@ export function TariffPage() {
     return currentTariff && String(currentTariff.tariff_id) === String(selectedTariffId) ? currentTariff : null;
   }, [currentTariff, selectedTariffId, tariffs]);
   const payment = useMemo(() => paymentFor(selectedTariff, months), [months, selectedTariff]);
+  const featuresCost = useMemo(
+    () => featuresCostFor(paidFeatures, selectedFeatureIds, months),
+    [months, paidFeatures, selectedFeatureIds],
+  );
+  const selectedFeatures = useMemo(
+    () => selectedFeaturesPayload(paidFeatures, selectedFeatureIds),
+    [paidFeatures, selectedFeatureIds],
+  );
+  const amountTotal = useMemo(
+    () => Math.max(0, payment.total + featuresCost),
+    [featuresCost, payment.total],
+  );
   const bonusesToApply = useMemo(
-    () => appliedBonuses(payment.total, bonusBalance, useBonuses),
-    [bonusBalance, payment.total, useBonuses],
+    () => appliedBonuses(amountTotal, bonusBalance, useBonuses),
+    [amountTotal, bonusBalance, useBonuses],
   );
   const payableTotal = useMemo(
-    () => Math.max(0, payment.total - bonusesToApply),
-    [bonusesToApply, payment.total],
+    () => Math.max(0, amountTotal - bonusesToApply),
+    [amountTotal, bonusesToApply],
   );
-  const canUseBonuses = bonusBalance > 0 && payment.total > 0 && maxBonusesForAmount(payment.total) > 0;
+  const canUseBonuses = bonusBalance > 0 && amountTotal > 0 && maxBonusesForAmount(amountTotal) > 0;
   const formattedPhone = useMemo(() => formatPhoneDigits(phoneDigits), [phoneDigits]);
-  const canSubmit = Boolean(selectedShopId && selectedTariff && phoneIsComplete(phoneDigits) && payment.total > 0);
+  const canSubmit = Boolean(selectedShopId && selectedTariff && phoneIsComplete(phoneDigits) && amountTotal > 0);
   const showTariffSelection = !isTokenMode && !currentTariff;
 
   useEffect(() => {
@@ -346,6 +435,9 @@ export function TariffPage() {
     setTariffError('');
     setTariffs([]);
     setCurrentTariff(null);
+    setPaidFeatures([]);
+    setSelectedFeatureIds(new Set());
+    setFeaturesOpen(false);
     setSelectedTariffId('');
 
     api.tariff
@@ -355,9 +447,17 @@ export function TariffPage() {
         const available = Array.isArray(data?.tariffs) ? data.tariffs : [];
         const current = enrichCurrentTariff(data?.current_tariff, available);
         const defaultTariff = current || available[0] || null;
+        const nextPaidFeatures = paidFeaturesFrom(data?.features, current);
+        const preselected = new Set(
+          nextPaidFeatures
+            .filter((feature) => feature.owned)
+            .map((feature) => feature.feature_id),
+        );
 
         setTariffs(available);
         setCurrentTariff(current);
+        setPaidFeatures(nextPaidFeatures);
+        setSelectedFeatureIds(preselected);
         setSelectedTariffId(defaultTariff ? String(defaultTariff.tariff_id) : '');
         setTariffStatus('ready');
       })
@@ -383,8 +483,10 @@ export function TariffPage() {
       .getPendingInvoice(selectedShopId, accessOptions)
       .then((data) => {
         if (!active) return;
-        setPendingInvoice(data?.invoice || null);
+        const invoice = data?.invoice || null;
+        setPendingInvoice(invoice);
         setInvoiceStatus('ready');
+        syncRemotePayIdempotency(selectedShopId, invoice);
       })
       .catch((error) => {
         if (!active) return;
@@ -450,6 +552,15 @@ export function TariffPage() {
     if (!urlToken) selectAuthShop(shopId);
   };
 
+  const toggleFeature = (featureId) => {
+    setSelectedFeatureIds((current) => {
+      const next = new Set(current);
+      if (next.has(featureId)) next.delete(featureId);
+      else next.add(featureId);
+      return next;
+    });
+  };
+
   const placePhoneCaret = (index) => {
     window.requestAnimationFrame(() => {
       const input = phoneInputRef.current;
@@ -500,19 +611,23 @@ export function TariffPage() {
   };
 
   const refreshPendingInvoice = async () => {
-    if (!selectedShopId) return;
+    if (!selectedShopId) return null;
     try {
       const data = await api.tariff.getPendingInvoice(selectedShopId, accessOptions);
-      setPendingInvoice(data?.invoice || null);
+      const invoice = data?.invoice || null;
+      setPendingInvoice(invoice);
       setInvoiceStatus('ready');
+      syncRemotePayIdempotency(selectedShopId, invoice);
+      return invoice;
     } catch {
       setPendingInvoice(null);
       setInvoiceStatus('error');
+      return null;
     }
   };
 
-  const confirmCancelInvoice = () => {
-    if (!pendingInvoice) return;
+  const confirmCancelInvoice = (invoice = pendingInvoice) => {
+    if (!invoice) return;
 
     modal.open({
       title: t('tariffInvoiceCancelConfirmTitle'),
@@ -522,7 +637,7 @@ export function TariffPage() {
           <button className="btn btn-ghost" type="button" onClick={modal.closeAll}>
             {t('cancel')}
           </button>
-          <button className="btn btn-danger" type="button" onClick={() => { modal.closeAll(); cancelInvoice(); }}>
+          <button className="btn btn-danger" type="button" onClick={() => { modal.closeAll(); cancelInvoice(invoice); }}>
             {t('tariffInvoiceCancel')}
           </button>
         </>
@@ -530,21 +645,54 @@ export function TariffPage() {
     });
   };
 
-  const cancelInvoice = async () => {
-    if (!pendingInvoice || !selectedShopId) return;
+  const showPendingInvoiceBlockedDialog = (invoice = pendingInvoice) => {
+    modal.open({
+      title: t('tariffPendingInvoiceBlockedTitle'),
+      body: <p className="color-muted">{t('tariffPendingInvoiceBlockedText')}</p>,
+      footer: (
+        <>
+          <button className="btn btn-ghost" type="button" onClick={modal.closeAll}>
+            {t('close')}
+          </button>
+          {invoice ? (
+            <button
+              className="btn btn-danger"
+              type="button"
+              onClick={() => {
+                modal.closeAll();
+                confirmCancelInvoice(invoice);
+              }}
+            >
+              {t('tariffInvoiceCancel')}
+            </button>
+          ) : null}
+        </>
+      ),
+    });
+  };
+
+  const cancelInvoice = async (invoice = pendingInvoice) => {
+    if (!invoice || !selectedShopId) return;
+
+    const invoiceId = pendingInvoiceId(invoice);
+    if (!invoiceId) {
+      toast.error(t('tariffInvoiceCancelError'));
+      return;
+    }
 
     setIsCancellingInvoice(true);
     try {
       const result = await api.tariff.cancelInvoice(
         {
           shop_id: String(selectedShopId),
-          invoice_id: Number(pendingInvoice.id),
+          invoice_id: invoiceId,
         },
         accessOptions,
       );
       if (result?.status === 'error') {
         throw new Error(result.error_text || t('tariffInvoiceCancelError'));
       }
+      finishRemotePayRecord(selectedShopId);
       toast.success(t('tariffInvoiceCancelSuccess'));
       await refreshPendingInvoice();
     } catch (error) {
@@ -574,22 +722,34 @@ export function TariffPage() {
       return;
     }
 
+    if (pendingInvoice) {
+      showPendingInvoiceBlockedDialog(pendingInvoice);
+      return;
+    }
+
     setIsSubmitting(true);
     try {
-      const bonuses = appliedBonuses(payment.total, bonusBalance, useBonuses);
-      const result = await api.tariff.remotePayRequest(
-        {
-          phone: formatPhoneDigits(phoneDigits),
-          amount: payment.total,
-          bonuses,
-          comment: comment.trim() || undefined,
-          shop_id: String(selectedShopId),
-          tariff_id: Number(selectedTariff.tariff_id),
-          months: Number(months),
-        },
-        accessOptions,
-      );
+      const bonuses = appliedBonuses(amountTotal, bonusBalance, useBonuses);
+      const paymentRequest = {
+        phone: formatPhoneDigits(phoneDigits),
+        amount: amountTotal,
+        bonuses,
+        comment: comment.trim() || undefined,
+        shop_id: String(selectedShopId),
+        tariff_id: Number(selectedTariff.tariff_id),
+        months: Number(months),
+        features: selectedFeatures,
+      };
+      const { idempotencyKey } = prepareRemotePayIdempotency(selectedShopId, paymentRequest);
+      const result = await api.tariff.remotePayRequest(paymentRequest, {
+        ...accessOptions,
+        idempotencyKey,
+      });
       if (result?.status === 'error') throw new Error(result.error_text || t('remotePaySendError'));
+      saveRemotePayRecord(selectedShopId, {
+        idempotencyKey,
+        paymentRequest,
+      });
       toast.success(t('remotePaySent'));
       setComment('');
       setUseBonuses(false);
@@ -602,6 +762,11 @@ export function TariffPage() {
         setBonusStatus('error');
       }
     } catch (error) {
+      if (isPendingInvoiceConflict(error)) {
+        const invoice = await refreshPendingInvoice();
+        showPendingInvoiceBlockedDialog(invoice);
+        return;
+      }
       toast.error(t('remotePaySendErrorWithMessage', { message: errorMessage(error, t('remotePaySendError')) }));
     } finally {
       setIsSubmitting(false);
@@ -798,6 +963,51 @@ export function TariffPage() {
               ) : null}
             </div>
 
+            {paidFeatures.length ? (
+              <div className={`tariff-features ${featuresOpen ? 'open' : ''}`}>
+                <button
+                  className="tariff-features-toggle"
+                  type="button"
+                  aria-expanded={featuresOpen}
+                  onClick={() => setFeaturesOpen((value) => !value)}
+                >
+                  <span className="tariff-features-toggle-label">
+                    <ChevronDown size={16} className="tariff-features-chevron" />
+                    {t('tariffAdditionalFeatures')}
+                  </span>
+                  <strong>
+                    {selectedFeatures.length
+                      ? t('tariffAdditionalFeaturesSelected', { count: selectedFeatures.length })
+                      : t('tariffAdditionalFeaturesNone')}
+                  </strong>
+                </button>
+
+                {featuresOpen ? (
+                  <div className="tariff-features-list">
+                    {paidFeatures.map((feature) => {
+                      const checked = selectedFeatureIds.has(feature.feature_id);
+                      return (
+                        <label className="tariff-feature-row" key={feature.feature_id}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleFeature(feature.feature_id)}
+                          />
+                          <span className="tariff-feature-copy">
+                            <span className="tariff-feature-name">{feature.feature_name}</span>
+                            {feature.owned ? (
+                              <span className="tariff-feature-owned">{t('tariffFeatureOwned')}</span>
+                            ) : null}
+                          </span>
+                          <strong>{fmt(feature.price)}</strong>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             {isTokenMode && pageError ? (
               <div className="tariff-inline-warning">
                 <strong>{t('error')}</strong>
@@ -873,9 +1083,15 @@ export function TariffPage() {
                   {payment.discount ? `-${fmt(payment.discount)}` : fmt(0)}
                 </strong>
               </div>
+              {paidFeatures.length ? (
+                <div>
+                  <span>{t('tariffAdditionalFeaturesCost')}</span>
+                  <strong>{fmt(featuresCost)}</strong>
+                </div>
+              ) : null}
               <div className="tariff-total-final">
                 <span>{t('amount')}</span>
-                <strong>{fmt(payment.total)}</strong>
+                <strong>{fmt(amountTotal)}</strong>
               </div>
               {payment.promo ? (
                 <p>{t('tariffPromoApplied', { percent: payment.promo.discount_percent })}</p>
@@ -912,7 +1128,7 @@ export function TariffPage() {
                 <div className="tariff-bonus-breakdown">
                   <div>
                     <span>{t('amount')}</span>
-                    <strong>{fmt(payment.total)}</strong>
+                    <strong>{fmt(amountTotal)}</strong>
                   </div>
                   <div>
                     <span>{t('tariffBonusesApplied')}</span>

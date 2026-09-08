@@ -163,6 +163,12 @@ export const api = {
       api.get('/api/web_auth/qr_status', { token }, { ...opts, auth: false, allowRefresh: false }),
     qrExchange: (token, opts) =>
       api.post('/api/web_auth/qr_exchange', { token }, { ...opts, auth: false, allowRefresh: false }),
+    checkPhone: (phone, opts) =>
+      api.get('/v2/api/check_phone_for_registration', { phone }, { ...opts, auth: false, allowRefresh: false, shopScoped: false }),
+    sendSmsWeb: (phone, opts) =>
+      api.post('/api/web_auth/send_sms_web', { phone }, { ...opts, auth: false, allowRefresh: false, shopScoped: false }),
+    checkSmsWeb: (phone, smsCode, opts) =>
+      api.post('/api/web_auth/check_sms_web', { phone, sms_code: smsCode }, { ...opts, auth: false, allowRefresh: false, shopScoped: false }),
     refresh: (opts) =>
       api.post('/api/web_auth/refresh', null, { ...opts, auth: false, allowRefresh: false, silentUnauthorized: true }),
     logout: (opts) => api.post('/api/web_auth/logout', null, { ...opts, allowRefresh: false, silentUnauthorized: true }),
@@ -221,9 +227,27 @@ export const api = {
       api.get('/api/web/tariff/invoice/pending', { shop_id: shopId }, { ...opts, shopScoped: false }),
     getBonusBalance: (shopId, opts) =>
       api.get('/api/web/tariff/bonus-balance', { shop_id: shopId }, { ...opts, shopScoped: false }),
-    cancelInvoice: (data, opts) =>
-      api.post('/api/web/tariff/invoice/cancel', data, { ...opts, shopScoped: false }),
-    remotePayRequest: (data, opts) =>
-      api.post('/api/web/tariff/remote_pay_request', data, { ...opts, shopScoped: false }),
+    cancelInvoice: (data, opts = {}) => {
+      const shopId = String(data?.shop_id ?? '').trim();
+      const invoiceId = Number(data?.invoice_id);
+      if (!shopId || !Number.isInteger(invoiceId) || invoiceId <= 0) {
+        return Promise.reject(new ApiError(translateNow('tariffInvoiceCancelError'), { status: 422 }));
+      }
+
+      const headers = new Headers(opts.headers || {});
+      headers.set('Content-Type', 'application/json');
+      headers.delete('Idempotency-Key');
+
+      return api.post(
+        '/api/web/tariff/invoice/cancel',
+        { shop_id: shopId, invoice_id: invoiceId },
+        { ...opts, headers, shopScoped: false },
+      );
+    },
+    remotePayRequest: (data, opts = {}) => {
+      const headers = new Headers(opts.headers || {});
+      if (opts.idempotencyKey) headers.set('Idempotency-Key', opts.idempotencyKey);
+      return api.post('/api/web/tariff/remote_pay_request', data, { ...opts, headers, shopScoped: false });
+    },
   },
 };

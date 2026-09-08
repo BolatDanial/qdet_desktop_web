@@ -77,7 +77,7 @@ export function AuthProvider({ children }) {
     }, delay);
   }, [clearRefreshTimer, refresh]);
 
-  const completeQrLogin = useCallback(async (data) => {
+  const completeWebLogin = useCallback(async (data) => {
     try {
       await establishSession(data?.access_token);
     } catch (event) {
@@ -125,12 +125,13 @@ export function AuthProvider({ children }) {
       ...session,
       isLoggedIn: Boolean(session.token),
       isBootstrapping,
-      completeQrLogin,
+      completeQrLogin: completeWebLogin,
+      completeWebLogin,
       selectShop,
       refresh,
       logout,
     }),
-    [completeQrLogin, isBootstrapping, logout, refresh, selectShop, session],
+    [completeWebLogin, isBootstrapping, logout, refresh, selectShop, session],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
