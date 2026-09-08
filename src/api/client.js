@@ -62,6 +62,7 @@ async function request(method, path, body, opts = {}) {
   const response = await fetch(urlServer + requestPath, {
     method,
     credentials: 'include',
+    cache: opts.cache || 'no-store',
     headers,
     signal: opts.signal,
     body:
@@ -223,8 +224,17 @@ export const api = {
     getShopPhones: (opts) => api.get('/api/web/tariff/shop-phones', undefined, { ...opts, shopScoped: false }),
     getAvailable: (shopId, opts) =>
       api.get('/api/web/tariff/available', { shop_id: shopId }, { ...opts, shopScoped: false }),
-    getPendingInvoice: (shopId, opts) =>
-      api.get('/api/web/tariff/invoice/pending', { shop_id: shopId }, { ...opts, shopScoped: false }),
+    getPendingInvoice: (shopId, opts = {}) =>
+      api.get(
+        '/api/web/tariff/invoice/pending',
+        { shop_id: shopId },
+        {
+          ...opts,
+          shopScoped: false,
+          cache: 'no-store',
+          headers: { ...(opts.headers || {}), 'Cache-Control': 'no-cache' },
+        },
+      ),
     getBonusBalance: (shopId, opts) =>
       api.get('/api/web/tariff/bonus-balance', { shop_id: shopId }, { ...opts, shopScoped: false }),
     cancelInvoice: (data, opts = {}) => {

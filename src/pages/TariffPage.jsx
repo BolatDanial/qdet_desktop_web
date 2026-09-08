@@ -16,6 +16,7 @@ import {
 
 const MONTH_PRESETS = [1, 3, 6, 12];
 const BONUS_MAX_SHARE = 0.5;
+const TARIFF_INVOICE_MODAL_ID = 'tariff-invoice-modal';
 
 function currentFeaturePriceMap(currentTariff) {
   const features = Array.isArray(currentTariff?.features) ? currentTariff.features : [];
@@ -291,7 +292,7 @@ function PendingInvoiceCard({ invoice, isCancelling, onCancel, t }) {
         className="btn btn-ghost btn-full tariff-pending-cancel"
         type="button"
         disabled={isCancelling}
-        onClick={onCancel}
+        onClick={() => onCancel(invoice)}
       >
         <XCircle size={16} />
         {isCancelling ? t('tariffInvoiceCancelling') : t('tariffInvoiceCancel')}
@@ -622,14 +623,17 @@ export function TariffPage() {
     } catch {
       setPendingInvoice(null);
       setInvoiceStatus('error');
+      syncRemotePayIdempotency(selectedShopId, null);
       return null;
     }
   };
 
-  const confirmCancelInvoice = (invoice = pendingInvoice) => {
-    if (!invoice) return;
+  const confirmCancelInvoice = (invoice) => {
+    const target = pendingInvoiceId(invoice) ? invoice : pendingInvoice;
+    if (!target) return;
 
     modal.open({
+      id: TARIFF_INVOICE_MODAL_ID,
       title: t('tariffInvoiceCancelConfirmTitle'),
       body: <p className="color-muted">{t('tariffInvoiceCancelConfirmText')}</p>,
       footer: (
@@ -637,7 +641,14 @@ export function TariffPage() {
           <button className="btn btn-ghost" type="button" onClick={modal.closeAll}>
             {t('cancel')}
           </button>
-          <button className="btn btn-danger" type="button" onClick={() => { modal.closeAll(); cancelInvoice(invoice); }}>
+          <button
+            className="btn btn-danger"
+            type="button"
+            onClick={() => {
+              modal.closeAll();
+              cancelInvoice(target);
+            }}
+          >
             {t('tariffInvoiceCancel')}
           </button>
         </>
@@ -646,7 +657,9 @@ export function TariffPage() {
   };
 
   const showPendingInvoiceBlockedDialog = (invoice = pendingInvoice) => {
+    const target = pendingInvoiceId(invoice) ? invoice : pendingInvoice;
     modal.open({
+      id: TARIFF_INVOICE_MODAL_ID,
       title: t('tariffPendingInvoiceBlockedTitle'),
       body: <p className="color-muted">{t('tariffPendingInvoiceBlockedText')}</p>,
       footer: (
@@ -654,14 +667,11 @@ export function TariffPage() {
           <button className="btn btn-ghost" type="button" onClick={modal.closeAll}>
             {t('close')}
           </button>
-          {invoice ? (
+          {target ? (
             <button
               className="btn btn-danger"
               type="button"
-              onClick={() => {
-                modal.closeAll();
-                confirmCancelInvoice(invoice);
-              }}
+              onClick={() => confirmCancelInvoice(target)}
             >
               {t('tariffInvoiceCancel')}
             </button>
@@ -671,15 +681,17 @@ export function TariffPage() {
     });
   };
 
-  const cancelInvoice = async (invoice = pendingInvoice) => {
-    if (!invoice || !selectedShopId) return;
+  const cancelInvoice = async (invoice) => {
+    const target = pendingInvoiceId(invoice) ? invoice : pendingInvoice;
+    if (!target || !selectedShopId) return;
 
-    const invoiceId = pendingInvoiceId(invoice);
+    const invoiceId = pendingInvoiceId(target);
     if (!invoiceId) {
       toast.error(t('tariffInvoiceCancelError'));
       return;
     }
 
+    modal.closeAll();
     setIsCancellingInvoice(true);
     try {
       const result = await api.tariff.cancelInvoice(
@@ -693,6 +705,7 @@ export function TariffPage() {
         throw new Error(result.error_text || t('tariffInvoiceCancelError'));
       }
       finishRemotePayRecord(selectedShopId);
+      setPendingInvoice(null);
       toast.success(t('tariffInvoiceCancelSuccess'));
       await refreshPendingInvoice();
     } catch (error) {
@@ -836,6 +849,7 @@ export function TariffPage() {
 
           {invoiceStatus === 'ready' && pendingInvoice ? (
             <PendingInvoiceCard
+              key={pendingInvoiceId(pendingInvoice) || pendingInvoice.created_at || 'pending'}
               invoice={pendingInvoice}
               isCancelling={isCancellingInvoice}
               onCancel={confirmCancelInvoice}
@@ -941,6 +955,7 @@ export function TariffPage() {
 
           {isTokenMode && invoiceStatus === 'ready' && pendingInvoice ? (
             <PendingInvoiceCard
+              key={pendingInvoiceId(pendingInvoice) || pendingInvoice.created_at || 'pending-token'}
               invoice={pendingInvoice}
               isCancelling={isCancellingInvoice}
               onCancel={confirmCancelInvoice}
