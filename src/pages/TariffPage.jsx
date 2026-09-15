@@ -10,8 +10,10 @@ import { fmt, fmtDate, fmtDateTime } from '../utils/format.js';
 import {
   finishRemotePayRecord,
   prepareRemotePayIdempotency,
+  readLastPhoneUsed,
   saveRemotePayRecord,
   syncRemotePayIdempotency,
+  writeLastPhoneUsed,
 } from '../utils/remotePayIdempotency.js';
 
 const MONTH_PRESETS = [1, 3, 6, 12];
@@ -191,8 +193,15 @@ function errorMessage(error, fallback) {
   return error?.message || fallback;
 }
 
+function errorDetail(error) {
+  if (!error || typeof error !== 'object') return null;
+  if (error.data?.detail !== undefined) return error.data.detail;
+  if (error.detail !== undefined) return error.detail;
+  return null;
+}
+
 function errorDetailText(error) {
-  const detail = error?.data?.detail ?? error?.message ?? '';
+  const detail = errorDetail(error) ?? error?.message ?? '';
   if (typeof detail === 'string') return detail;
   if (Array.isArray(detail)) {
     return detail.map((item) => item?.msg || item?.detail || String(item)).join(' ');
@@ -203,9 +212,24 @@ function errorDetailText(error) {
   return String(detail);
 }
 
+function errorDetailCode(error) {
+  const detail = errorDetail(error);
+  if (detail && typeof detail === 'object' && !Array.isArray(detail) && detail.code) {
+    return String(detail.code);
+  }
+  if (error?.data?.code) return String(error.data.code);
+  if (error?.code) return String(error.code);
+  return '';
+}
+
 function isPendingInvoiceConflict(error) {
   if (!(error instanceof ApiError) || error.status !== 400) return false;
   return /already has pending invoice/i.test(errorDetailText(error));
+}
+
+function isKaspiClientNotFound(error) {
+  if (errorDetailCode(error) === 'kaspi_client_not_found') return true;
+  return /kaspi_client_not_found/i.test(errorDetailText(error));
 }
 
 function invoiceCancelErrorMessage(error, t) {
@@ -320,6 +344,18 @@ export function TariffPage() {
   const hasAccess = Boolean(urlToken || auth.isLoggedIn);
   const shopLocked = Boolean(urlToken || requestedShopId);
   const phoneInputRef = useRef(null);
+  const shopLoadAuthRef = useRef({
+    shops: authShops,
+    selectedShopId: authSelectedShopId,
+    selectShop: selectAuthShop,
+    t,
+  });
+  shopLoadAuthRef.current = {
+    shops: authShops,
+    selectedShopId: authSelectedShopId,
+    selectShop: selectAuthShop,
+    t,
+  };
 
   const [shops, setShops] = useState([]);
   const [selectedShopId, setSelectedShopId] = useState('');
@@ -333,7 +369,7 @@ export function TariffPage() {
   const [selectedFeatureIds, setSelectedFeatureIds] = useState(() => new Set());
   const [featuresOpen, setFeaturesOpen] = useState(false);
   const [selectedTariffId, setSelectedTariffId] = useState('');
-  const [phoneDigits, setPhoneDigits] = useState('7');
+  const [phoneDigits, setPhoneDigits] = useState(() => normalizePhoneDigits(readLastPhoneUsed() || '7'));
   const [months, setMonths] = useState(1);
   const [comment, setComment] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -344,6 +380,7 @@ export function TariffPage() {
   const [bonusBalance, setBonusBalance] = useState(0);
   const [bonusStatus, setBonusStatus] = useState('idle');
   const [useBonuses, setUseBonuses] = useState(false);
+  const [kaspiClientNotFound, setKaspiClientNotFound] = useState(false);
 
   const selectedShop = useMemo(
     () => shops.find((shop) => String(shop.shop_id) === String(selectedShopId)) || null,
@@ -377,7 +414,7 @@ export function TariffPage() {
     [amountTotal, bonusesToApply],
   );
   const canUseBonuses = bonusBalance > 0 && amountTotal > 0 && maxBonusesForAmount(amountTotal) > 0;
-  const formattedPhone = useMemo(() => formatPhoneDigits(phoneDigits), [phoneDigits]);
+  const remotePayFormPhone = useMemo(() => formatPhoneDigits(phoneDigits), [phoneDigits]);
   const canSubmit = Boolean(selectedShopId && selectedTariff && phoneIsComplete(phoneDigits) && amountTotal > 0);
   const showTariffSelection = !isTokenMode && !currentTariff;
 
@@ -392,41 +429,45 @@ export function TariffPage() {
       .getShopPhones(accessOptions)
       .then((data) => {
         if (!active) return;
-        const merged = mergeShops(data?.shops, authShops, requestedShopId);
-        if (!merged.length) throw new Error(t('noShops'));
+        const { shops: currentAuthShops, selectedShopId: currentAuthShopId, selectShop, t: translate } =
+          shopLoadAuthRef.current;
+        const merged = mergeShops(data?.shops, currentAuthShops, requestedShopId);
+        if (!merged.length) throw new Error(translate('noShops'));
 
         setShops(merged);
         const preferredShopId =
           requestedShopId ||
-          (!urlToken && authSelectedShopId ? authSelectedShopId : '') ||
+          (!urlToken && currentAuthShopId ? currentAuthShopId : '') ||
           merged[0].shop_id;
         setSelectedShopId(String(preferredShopId));
         setShopStatus('ready');
 
-        if (!urlToken && requestedShopId && authSelectedShopId !== String(requestedShopId)) {
-          selectAuthShop(requestedShopId);
+        if (!urlToken && requestedShopId && currentAuthShopId !== String(requestedShopId)) {
+          selectShop(requestedShopId);
         }
       })
       .catch((error) => {
         if (!active) return;
-        const fallbackShops = !urlToken ? mergeShops([], authShops, requestedShopId) : [];
+        const { shops: currentAuthShops, selectedShopId: currentAuthShopId, t: translate } =
+          shopLoadAuthRef.current;
+        const fallbackShops = !urlToken ? mergeShops([], currentAuthShops, requestedShopId) : [];
         if (fallbackShops.length) {
           setShops(fallbackShops);
           setSelectedShopId(
-            String(requestedShopId || authSelectedShopId || fallbackShops[0].shop_id),
+            String(requestedShopId || currentAuthShopId || fallbackShops[0].shop_id),
           );
           setShopStatus('ready');
           return;
         }
 
         setShopStatus('error');
-        setPageError(errorMessage(error, t('tariffShopLoadError')));
+        setPageError(errorMessage(error, translate('tariffShopLoadError')));
       });
 
     return () => {
       active = false;
     };
-  }, [accessOptions, authSelectedShopId, authShops, hasAccess, requestedShopId, selectAuthShop, t, urlToken]);
+  }, [accessOptions, hasAccess, requestedShopId, urlToken]);
 
   useEffect(() => {
     if (!hasAccess || !selectedShopId) return undefined;
@@ -530,11 +571,20 @@ export function TariffPage() {
   }, [accessOptions, hasAccess, reloadTick, selectedShopId]);
 
   useEffect(() => {
+    setKaspiClientNotFound(false);
+  }, [phoneDigits]);
+
+  useEffect(() => {
     if (!useBonuses || canUseBonuses) return;
     setUseBonuses(false);
   }, [canUseBonuses, useBonuses]);
 
   useEffect(() => {
+    const lastPhone = readLastPhoneUsed();
+    if (lastPhone) {
+      setPhoneDigits(normalizePhoneDigits(lastPhone));
+      return;
+    }
     if (selectedShop?.phone) {
       setPhoneDigits(normalizePhoneDigits(selectedShop.phone));
       return;
@@ -681,6 +731,21 @@ export function TariffPage() {
     });
   };
 
+  const showKaspiClientNotFound = () => {
+    setKaspiClientNotFound(true);
+    modal.open({
+      id: TARIFF_INVOICE_MODAL_ID,
+      closeOnOverlay: false,
+      title: t('remotePayKaspiClientNotFoundTitle'),
+      body: <p className="color-muted">{t('remotePayKaspiClientNotFoundText')}</p>,
+      footer: (
+        <button className="btn btn-primary" type="button" onClick={modal.closeAll}>
+          {t('close')}
+        </button>
+      ),
+    });
+  };
+
   const cancelInvoice = async (invoice) => {
     const target = pendingInvoiceId(invoice) ? invoice : pendingInvoice;
     if (!target || !selectedShopId) return;
@@ -720,31 +785,20 @@ export function TariffPage() {
     }
   };
 
-  const submit = async (event) => {
-    event.preventDefault();
-    if (!selectedShopId) {
-      toast.error(t('remotePayNoShop'));
-      return;
-    }
-    if (!selectedTariff) {
-      toast.error(t('tariffSelectRequired'));
-      return;
-    }
-    if (!phoneIsComplete(phoneDigits)) {
-      toast.error(t('remotePayPhoneError'));
-      return;
-    }
-
+  const sendRemotePay = async () => {
+    if (!selectedShopId || !selectedTariff || !phoneIsComplete(phoneDigits)) return;
     if (pendingInvoice) {
       showPendingInvoiceBlockedDialog(pendingInvoice);
       return;
     }
 
+    const formatted = remotePayFormPhone;
+    setKaspiClientNotFound(false);
     setIsSubmitting(true);
     try {
       const bonuses = appliedBonuses(amountTotal, bonusBalance, useBonuses);
       const paymentRequest = {
-        phone: formatPhoneDigits(phoneDigits),
+        phone: formatted,
         amount: amountTotal,
         bonuses,
         comment: comment.trim() || undefined,
@@ -758,7 +812,11 @@ export function TariffPage() {
         ...accessOptions,
         idempotencyKey,
       });
+      if (isKaspiClientNotFound(result)) {
+        throw new ApiError(result.detail || result, { data: result });
+      }
       if (result?.status === 'error') throw new Error(result.error_text || t('remotePaySendError'));
+      writeLastPhoneUsed(formatted);
       saveRemotePayRecord(selectedShopId, {
         idempotencyKey,
         paymentRequest,
@@ -780,10 +838,61 @@ export function TariffPage() {
         showPendingInvoiceBlockedDialog(invoice);
         return;
       }
+      if (isKaspiClientNotFound(error)) {
+        finishRemotePayRecord(selectedShopId);
+        showKaspiClientNotFound();
+        await refreshPendingInvoice();
+        return;
+      }
       toast.error(t('remotePaySendErrorWithMessage', { message: errorMessage(error, t('remotePaySendError')) }));
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const confirmSendRemotePay = () => {
+    modal.open({
+      id: TARIFF_INVOICE_MODAL_ID,
+      closeOnOverlay: false,
+      footerAlign: 'start',
+      title: t('remotePayKaspiPhoneConfirmTitle'),
+      body: <p className="color-muted">{t('remotePayKaspiPhoneConfirmText')}</p>,
+      footer: (
+        <button
+          className="btn btn-primary"
+          type="button"
+          onClick={() => {
+            modal.closeAll();
+            sendRemotePay();
+          }}
+        >
+          {t('remotePaySubmit')}
+        </button>
+      ),
+    });
+  };
+
+  const submit = (event) => {
+    event.preventDefault();
+    if (!selectedShopId) {
+      toast.error(t('remotePayNoShop'));
+      return;
+    }
+    if (!selectedTariff) {
+      toast.error(t('tariffSelectRequired'));
+      return;
+    }
+    if (!phoneIsComplete(phoneDigits)) {
+      toast.error(t('remotePayPhoneError'));
+      return;
+    }
+
+    if (pendingInvoice) {
+      showPendingInvoiceBlockedDialog(pendingInvoice);
+      return;
+    }
+
+    confirmSendRemotePay();
   };
 
   const content = (
@@ -1051,11 +1160,17 @@ export function TariffPage() {
                 ref={phoneInputRef}
                 inputMode="tel"
                 autoComplete="tel"
-                value={formattedPhone}
+                value={remotePayFormPhone}
                 placeholder="+7 (778) 879-66-33"
+                aria-invalid={kaspiClientNotFound}
                 onChange={handlePhoneChange}
                 onKeyDown={handlePhoneKeyDown}
               />
+              {kaspiClientNotFound ? (
+                <p className="color-red text-sm" role="alert">
+                  {t('remotePayKaspiClientNotFoundText')}
+                </p>
+              ) : null}
             </div>
 
             <div className="input-group">

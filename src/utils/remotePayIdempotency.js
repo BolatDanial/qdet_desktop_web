@@ -1,4 +1,19 @@
 const STORAGE_PREFIX = 'qdet:remote-payment:';
+const LAST_PHONE_KEY = 'last_phone_used';
+
+export function readLastPhoneUsed() {
+  try {
+    const value = localStorage.getItem(LAST_PHONE_KEY);
+    return typeof value === 'string' && value.trim() ? value.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+export function writeLastPhoneUsed(phone) {
+  if (!phone) return;
+  localStorage.setItem(LAST_PHONE_KEY, phone);
+}
 
 function storageKey(shopId) {
   return `${STORAGE_PREFIX}${String(shopId)}`;

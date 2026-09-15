@@ -50,6 +50,7 @@ export function ModalProvider({ children }) {
           className={`modal-overlay active${sheetLocked ? ' modal-overlay-locked' : ''}`}
           key={modal.id}
           onClick={(event) => {
+            if (modal.closeOnOverlay === false) return;
             if (event.target !== event.currentTarget) return;
             if (Date.now() - lastOpenAtRef.current < INTERACT_GUARD_MS) return;
             close(modal.id);
@@ -71,7 +72,11 @@ export function ModalProvider({ children }) {
               </button>
             </div>
             <div className="modal-body">{modal.body}</div>
-            {modal.footer ? <div className="modal-footer">{modal.footer}</div> : null}
+            {modal.footer ? (
+              <div className={`modal-footer${modal.footerAlign === 'start' ? ' modal-footer-start' : ''}`}>
+                {modal.footer}
+              </div>
+            ) : null}
           </div>
         </div>
       ))}

@@ -202,6 +202,12 @@ input, select, textarea { font-family: inherit; }
 .input-group input:focus, .input-group select:focus, .input-group textarea:focus {
   border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 }
+.input-group input[aria-invalid="true"] {
+  border-color: var(--accent-red);
+}
+.input-group input[aria-invalid="true"] + .color-red {
+  margin-top: 8px;
+}
 .input-with-prefix { display: flex; }
 .input-prefix {
   padding: 12px 14px; background: var(--bg-hover); border: 1px solid var(--border);
@@ -622,6 +628,8 @@ tr:hover td { background: var(--bg-hover); }
 .modal-close:hover { background: var(--bg-hover); color: var(--text-primary); }
 .modal-body { padding: 24px; }
 .modal-footer { display: flex; gap: 10px; justify-content: flex-end; padding: 16px 24px; border-top: 1px solid var(--border); }
+.modal-footer-start { justify-content: flex-start; }
+.modal-footer-start .btn { flex: 0 0 auto; }
 
 /* Empty state */
 .empty-state {
@@ -1406,6 +1414,9 @@ tr:hover td { background: var(--bg-hover); }
   }
   .modal-footer .btn {
     flex: 1 1 140px;
+  }
+  .modal-footer-start .btn {
+    flex: 0 0 auto;
   }
   .toast-container {
     left: 12px;

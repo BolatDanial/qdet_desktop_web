@@ -1,14 +1,36 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client.js';
 import { useI18n } from '../i18n/I18nContext.jsx';
-import { decodeJwtPayload, getInitialSession, sessionStore, userFromAccessToken } from './session.js';
+import {
+  clampRefreshDelay,
+  getAccessTokenRefreshDelay,
+  getInitialSession,
+  hasFullSessionAccessToken,
+  isAccessTokenFresh,
+  isSessionAccessToken,
+  sessionStore,
+  userFromAccessToken,
+} from './session.js';
 
 const AuthContext = createContext(null);
+
+function needsImmediateRefresh(token) {
+  if (!isSessionAccessToken(token)) return false;
+  const delay = getAccessTokenRefreshDelay(token);
+  return delay !== null && delay <= 0;
+}
+
+function needsAuthBootstrap() {
+  const token = sessionStore.get('token');
+  if (!isSessionAccessToken(token)) return false;
+  if (needsImmediateRefresh(token)) return true;
+  return !(sessionStore.get('shops') || []).length;
+}
 
 export function AuthProvider({ children }) {
   const { t } = useI18n();
   const [session, setSession] = useState(getInitialSession);
-  const [isBootstrapping, setIsBootstrapping] = useState(true);
+  const [isBootstrapping, setIsBootstrapping] = useState(needsAuthBootstrap);
   const refreshTimerRef = useRef(null);
   const refreshPromiseRef = useRef(null);
 
@@ -26,7 +48,7 @@ export function AuthProvider({ children }) {
   }, [clearRefreshTimer]);
 
   const establishSession = useCallback(async (accessToken) => {
-    if (!accessToken) throw new Error(t('sessionExpired'));
+    if (!isSessionAccessToken(accessToken)) throw new Error(t('sessionExpired'));
 
     const user = userFromAccessToken(accessToken);
     sessionStore.set('token', accessToken);
@@ -48,6 +70,7 @@ export function AuthProvider({ children }) {
 
   const refresh = useCallback(async () => {
     if (refreshPromiseRef.current) return refreshPromiseRef.current;
+    if (!hasFullSessionAccessToken()) return false;
 
     refreshPromiseRef.current = api.webAuth
       .refresh()
@@ -65,16 +88,18 @@ export function AuthProvider({ children }) {
 
   const scheduleRefresh = useCallback((token) => {
     clearRefreshTimer();
-    const exp = decodeJwtPayload(token)?.exp;
-    if (!exp) return;
-    const delay = exp * 1000 - Date.now() - 60_000;
+    if (!isSessionAccessToken(token)) return;
+
+    const delay = getAccessTokenRefreshDelay(token);
+    if (delay == null) return;
     if (delay <= 0) {
       refresh();
       return;
     }
+
     refreshTimerRef.current = window.setTimeout(() => {
       refresh();
-    }, delay);
+    }, clampRefreshDelay(delay));
   }, [clearRefreshTimer, refresh]);
 
   const completeWebLogin = useCallback(async (data) => {
@@ -112,18 +137,42 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     let active = true;
-    refresh().finally(() => {
+    const finish = () => {
       if (active) setIsBootstrapping(false);
-    });
+    };
+    const token = sessionStore.get('token');
+
+    if (!isSessionAccessToken(token)) {
+      finish();
+      return () => {
+        active = false;
+      };
+    }
+
+    if (isAccessTokenFresh(token)) {
+      if ((sessionStore.get('shops') || []).length) {
+        finish();
+        return () => {
+          active = false;
+        };
+      }
+
+      establishSession(token).catch(clearSession).finally(finish);
+      return () => {
+        active = false;
+      };
+    }
+
+    refresh().finally(finish);
     return () => {
       active = false;
     };
-  }, [refresh]);
+  }, [clearSession, establishSession, refresh]);
 
   const value = useMemo(
     () => ({
       ...session,
-      isLoggedIn: Boolean(session.token),
+      isLoggedIn: Boolean(session.token) && isSessionAccessToken(session.token),
       isBootstrapping,
       completeQrLogin: completeWebLogin,
       completeWebLogin,

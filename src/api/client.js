@@ -1,4 +1,4 @@
-import { sessionStore } from '../auth/session.js';
+import { hasFullSessionAccessToken, sessionStore } from '../auth/session.js';
 import { urlServer } from '../config/server.js';
 import { translateNow } from '../i18n/I18nContext.jsx';
 import { cleanParams } from '../utils/format.js';
@@ -74,7 +74,13 @@ async function request(method, path, body, opts = {}) {
   });
 
   if (response.status === 401) {
-    if (opts.accessToken === undefined && opts.allowRefresh !== false && refreshHandler) {
+    const canRefreshSession =
+      opts.accessToken === undefined &&
+      opts.allowRefresh !== false &&
+      hasFullSessionAccessToken() &&
+      Boolean(refreshHandler);
+
+    if (canRefreshSession) {
       const refreshed = await refreshHandler().catch(() => false);
       if (refreshed) {
         return request(method, path, body, { ...opts, allowRefresh: false });
@@ -92,10 +98,32 @@ async function request(method, path, body, opts = {}) {
   return data;
 }
 
-const get = (path, params, opts) => {
+const inflightGets = new Map();
+
+function getInflightKey(url, opts = {}) {
+  const token =
+    opts.accessToken !== undefined
+      ? opts.accessToken || ''
+      : opts.auth === false
+        ? ''
+        : sessionStore.get('token') || '';
+  return `${url}\0${token}\0${opts.shopScoped === false ? '0' : '1'}`;
+}
+
+const get = (path, params, opts = {}) => {
   const clean = cleanParams(params);
   const url = Object.keys(clean).length ? `${path}?${new URLSearchParams(clean)}` : path;
-  return request('GET', url, null, opts);
+  if (opts.signal) return request('GET', url, null, opts);
+
+  const key = getInflightKey(url, opts);
+  const existing = inflightGets.get(key);
+  if (existing) return existing;
+
+  const pending = request('GET', url, null, opts).finally(() => {
+    if (inflightGets.get(key) === pending) inflightGets.delete(key);
+  });
+  inflightGets.set(key, pending);
+  return pending;
 };
 
 export const api = {
