@@ -155,18 +155,27 @@ function enrichCurrentTariff(currentTariff, tariffs) {
   return { ...tariff, ...currentTariff, promos: tariff?.promos || currentTariff.promos || [] };
 }
 
+function promoDiscount(promo, tariff, months) {
+  const amount = Number(promo?.discount_amount);
+  if (promo?.discount_amount !== undefined && promo?.discount_amount !== null && Number.isFinite(amount)) {
+    return Math.max(0, amount) * months;
+  }
+  const base = Number(tariff?.price || 0) * months;
+  return Math.round((base * Number(promo?.discount_percent || 0)) / 100);
+}
+
 function bestPromo(tariff, months) {
   const promos = Array.isArray(tariff?.promos) ? tariff.promos : [];
   return promos
     .filter((promo) => Number(months) >= Number(promo.min_months || 0))
-    .sort((left, right) => Number(right.discount_percent || 0) - Number(left.discount_percent || 0))[0] || null;
+    .sort((left, right) => promoDiscount(right, tariff, months) - promoDiscount(left, tariff, months))[0] || null;
 }
 
 function paymentFor(tariff, months) {
   const monthCount = Math.max(1, Number(months) || 1);
   const base = Number(tariff?.price || 0) * monthCount;
   const promo = bestPromo(tariff, monthCount);
-  const discount = promo ? Math.round((base * Number(promo.discount_percent || 0)) / 100) : 0;
+  const discount = promo ? promoDiscount(promo, tariff, monthCount) : 0;
   return {
     base,
     discount,
@@ -1020,10 +1029,15 @@ export function TariffPage() {
                           {tariff.promos.map((promo) => (
                             <span className="promo-chip" key={`${tariff.tariff_id}-${promo.min_months}`}>
                               <Sparkles size={13} />
-                              {t('tariffPromoPreview', {
-                                months: promo.min_months,
-                                percent: promo.discount_percent,
-                              })}
+                              {promo.discount_amount !== undefined && promo.discount_amount !== null
+                                ? t('tariffPromoPreviewAmount', {
+                                    months: promo.min_months,
+                                    amount: fmt(promo.discount_amount),
+                                  })
+                                : t('tariffPromoPreview', {
+                                    months: promo.min_months,
+                                    percent: promo.discount_percent,
+                                  })}
                             </span>
                           ))}
                         </div>
@@ -1224,7 +1238,11 @@ export function TariffPage() {
                 <strong>{fmt(amountTotal)}</strong>
               </div>
               {payment.promo ? (
-                <p>{t('tariffPromoApplied', { percent: payment.promo.discount_percent })}</p>
+                <p>
+                  {payment.promo.discount_amount !== undefined && payment.promo.discount_amount !== null
+                    ? t('tariffPromoAppliedAmount', { amount: fmt(payment.promo.discount_amount) })
+                    : t('tariffPromoApplied', { percent: payment.promo.discount_percent })}
+                </p>
               ) : null}
             </div>
 
